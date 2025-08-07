@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Loading...</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 2em;
+            background-color: #f2f4f8;
+            color: #1a1a1a;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        h1 {
+            text-align: center;
+            background-color: #1d3557;
+            color: white;
+            padding: 1em 0;
+            margin: 0;
+        }
+
+        .download-all-wrapper {
+            text-align: right;
+            padding: 1em;
+            background-color: #f7f9fb;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .download-all-button,
+        .stop-button {
+            background-color: #1d3557;
+            color: white;
+            padding: 8px 14px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-left: 8px;
+        }
+
+        .download-all-button:hover,
+        .stop-button:hover {
+            background-color: #16324c;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        thead {
+            background-color: #457b9d;
+            color: white;
+        }
+
+        th,
+        td {
+            padding: 14px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+            vertical-align: middle;
+        }
+
+        tbody tr:hover {
+            background-color: #f1f9ff;
+        }
+
+        a.blob-link {
+            color: #1d3557;
+            text-decoration: none;
+            font-weight: bold;
+        }
+
+        a.blob-link:hover {
+            text-decoration: underline;
+        }
+
+        .footer {
+            text-align: center;
+            font-size: 0.9em;
+            color: #999;
+            margin-top: 2em;
+        }
+
+        .error {
+            color: red;
+            text-align: center;
+            margin-top: 20px;
+        }
+
+        .input-section {
+            max-width: 1000px;
+            margin: 3em auto 1em auto;
+            text-align: center;
+        }
+
+        input[type='text'] {
+            width: 80%;
+            padding: 10px;
+            border: 1px solid #aaa;
+            border-radius: 6px;
+        }
+
+        button {
+            padding: 10px 16px;
+            background-color: #1d3557;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+
+        button:hover {
+            background-color: #16324c;
+        }
+
+        /* Spinner styles */
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(0, 0, 0, 0.1);
+            border-left-color: #1d3557;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            vertical-align: middle;
+            margin-left: 8px;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .download-status {
+            font-size: 0.9em;
+            color: #555;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container" id="content" style="display: none;">
+        <h1 id="page-title">File Share</h1>
+
+        <div class="download-all-wrapper">
+            <button class="download-all-button" onclick="downloadAll()" id="downloadAllBtn">⬇️ Download All</button>
+            <button class="stop-button" onclick="stopDownloads()" id="stopBtn" disabled>⏹ Stop</button>
+        </div>
+
+        <table id="blobTable">
+            <thead>
+                <tr>
+                    <th>File Name</th>
+                    <th>Content Type</th>
+                    <th>Size (bytes)</th>
+                    <th>Last Modified</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <div class="error" id="error" style="display: none;"></div>
+
+    <div class="input-section">
+        <form id="sasForm">
+            <input type="text" id="sasUrlInput" placeholder="Paste your Azure Blob SAS URL here" required
+                value="" />
+            <button type="submit">Reload</button>
+        </form>
+    </div>
+
+    <div id="footer" class="footer">Link expires: <span id="expiry-date">Loading...</span></div>
+
+    <script>
+        let blobs = [];
+        let stopFlag = false;
+        let downloading = false;
+
+        function loadFromUrl(fullUrl) {
+            if (!fullUrl.includes('?')) {
+                showError("Invalid SAS URL. Make sure it contains a '?' character.");
+                return;
+            }
+
+            const [containerUrl, sasToken] = fullUrl.split('?');
+            const params = new URLSearchParams(sasToken);
+            const expiry = params.get('se');
+            if (expiry) {
+                const expiryDate = new Date(expiry).toLocaleString();
+                document.getElementById('expiry-date').textContent = expiryDate;
+            } else {
+                document.getElementById('expiry-date').textContent = 'Unknown';
+            }
+
+            const containerName = containerUrl.split('/').pop();
+
+            document.title = `DSAI File Share - ${containerName}`;
+            document.getElementById('page-title').textContent = `DSAI File Share - ${containerName}`;
+
+            const xmlUrl = `${containerUrl}?restype=container&comp=list&${sasToken}`;
+
+            fetch(xmlUrl)
+                .then((response) => {
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    return response.text();
+                })
+                .then((str) => new window.DOMParser().parseFromString(str, 'text/xml'))
+                .then((data) => {
+                    const blobNodes = data.getElementsByTagName('Blob');
+                    const tbody = document.querySelector('#blobTable tbody');
+                    tbody.innerHTML = '';
+                    blobs = [];
+
+                    for (let i = 0; i < blobNodes.length; i++) {
+                        const blob = blobNodes[i];
+                        const name = blob.getElementsByTagName('Name')[0]?.textContent || '';
+                        const contentType = blob.getElementsByTagName('Content-Type')[0]?.textContent || '';
+                        const size = blob.getElementsByTagName('Content-Length')[0]?.textContent || '';
+                        const lastModified = blob.getElementsByTagName('Last-Modified')[0]?.textContent || '';
+
+                        const blobUrl = `${containerUrl}/${encodeURIComponent(name)}?${sasToken}`;
+                        blobs.push({ name, url: blobUrl, size: parseInt(size) || 0 });
+
+                        const row = document.createElement('tr');
+                        row.id = `row-${i}`;
+                        row.innerHTML = `
+            <td><a class="blob-link" href="${blobUrl}" target="_blank" rel="noopener noreferrer">${name}</a></td>
+            <td>${contentType}</td>
+            <td>${size}</td>
+            <td>${lastModified}</td>
+            <td id="status-${i}"><progress value="0" max="100" style="width:100%; display:none;"></progress></td>
+          `;
+                        tbody.appendChild(row);
+                    }
+
+                    document.getElementById('content').style.display = 'block';
+                    document.getElementById('error').style.display = 'none';
+                })
+                .catch((err) => {
+                    showError('Failed to load blob data. ' + err.message);
+                });
+        }
+
+        async function downloadBlob(blob, index) {
+            const statusCell = document.getElementById(`status-${index}`);
+
+            // Recreate progress bar if missing (after stop or finished downloads)
+            let progressBar = statusCell.querySelector('progress');
+            if (!progressBar) {
+                statusCell.innerHTML = '<progress value="0" max="100" style="width:100%; display:inline-block;"></progress>';
+                progressBar = statusCell.querySelector('progress');
+            } else {
+                progressBar.style.display = 'inline-block';
+                progressBar.value = 0;
+            }
+
+            try {
+                const response = await fetch(blob.url);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                const contentLength = blob.size;
+                const reader = response.body.getReader();
+                const chunks = [];
+                let received = 0;
+
+                while (true) {
+                    if (stopFlag) {
+                        statusCell.textContent = 'Cancelled ⏹';
+                        return;
+                    }
+
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    chunks.push(value);
+                    received += value.length;
+                    if (contentLength > 0) {
+                        progressBar.value = Math.round((received / contentLength) * 100);
+                    }
+                }
+
+                const blobData = new Blob(chunks);
+                const url = window.URL.createObjectURL(blobData);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = blob.name;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(url);
+
+                statusCell.textContent = 'Downloaded ✅';
+            } catch (err) {
+                statusCell.textContent = `Error ❌`;
+                console.error(`Error downloading ${blob.name}:`, err);
+            }
+        }
+
+        async function downloadAll() {
+            if (blobs.length === 0) {
+                alert('No files to download.');
+                return;
+            }
+            if (downloading) {
+                alert('Download already in progress.');
+                return;
+            }
+            stopFlag = false;
+            downloading = true;
+            document.getElementById('downloadAllBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = false;
+
+            for (let i = 0; i < blobs.length; i++) {
+                await downloadBlob(blobs[i], i);
+                if (stopFlag) break;
+            }
+
+            downloading = false;
+            stopFlag = false;
+            document.getElementById('downloadAllBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+        }
+
+        function stopDownloads() {
+            if (!downloading) return;
+            stopFlag = true;
+            document.getElementById('stopBtn').disabled = true;
+        }
+
+        function showError(message) {
+            const errorBox = document.getElementById('error');
+            errorBox.textContent = message;
+            errorBox.style.display = 'block';
+            document.getElementById('content').style.display = 'none';
+        }
+
+        document.getElementById('sasForm').addEventListener('submit', function (e) {
+            e.preventDefault();
+            const fullUrl = document.getElementById('sasUrlInput').value.trim();
+            loadFromUrl(fullUrl);
+        });
+
+        window.addEventListener('DOMContentLoaded', () => {
+            const defaultUrl = document.getElementById('sasUrlInput').value.trim();
+            loadFromUrl(defaultUrl);
+        });
+    </script>
+
+</body>
+
+</html>
